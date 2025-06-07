@@ -45,21 +45,13 @@ const getRegionPopulationTool = ai.defineTool(
 
 const CongestionForecastInputSchema = z.object({
   date: z.string().describe('축제 시작일 (YYYY-MM-DD).'),
-  duration: z.number().describe('축제 진행 기간 (일).'),
-  frequency: z.number().describe('축제 진행 횟수 (연 단위).'),
   festivalType: z.string().describe('축제 종류 (예: 문화관광, 지역특산물).'),
-  posterDataUri: z.string().describe("업로드된 행사 포스터 이미지의 데이터 URI. 형식: 'data:<mimetype>;base64,<encoded_data>'."),
-  slogan: z.string().describe('축제 슬로건 텍스트.'),
   region: z.string().describe('축제 개최 지역 (광역자치단체 + 기초자치단체, 예: "서울특별시 강남구").'),
 });
 export type CongestionForecastInput = z.infer<typeof CongestionForecastInputSchema>;
 
 const CongestionForecastOutputSchema = z.object({
-  posterScore: z.number().min(0).max(100).describe('AI가 분석한 행사 포스터의 매력도 점수 (0-100점).'),
-  totalExpectedVisitors: z.number().describe('예상되는 총 방문객 수.'),
-  localVisitors: z.number().describe('예상되는 현지인 방문객 수.'),
-  externalVisitors: z.number().describe('예상되는 외지인(관광객) 방문객 수.'),
-  analysisReasoning: z.string().describe('방문객 수 예측에 대한 AI의 분석 근거 및 설명.')
+  totalExpectedVisitors: z.number().describe('예상되는 총 방문객 수.')
 });
 export type CongestionForecastOutput = z.infer<typeof CongestionForecastOutputSchema>;
 
@@ -72,16 +64,13 @@ const prompt = ai.definePrompt({
   input: { schema: CongestionForecastInputSchema.extend({ estimatedLocalPopulation: z.number() }) }, // Add population here
   output: { schema: CongestionForecastOutputSchema },
   tools: [getRegionPopulationTool], // Make tool available
-  prompt: `You are an AI expert specializing in forecasting festival attendance and evaluating promotional materials. Your responses must be in Korean.
+  prompt: `You are an AI expert specializing in forecasting festival attendance. Your responses must be in Korean.
 
-  You will receive details about an upcoming festival: date, duration, frequency, type, poster image, slogan, and region.
+  You will receive details about an upcoming festival: date, duration, frequency, type, and region.
   First, use the 'getRegionPopulationTool' to get the estimated population for the 'region' provided in the input.
 
   Based on all this information, including the estimated local population ({{{estimatedLocalPopulation}}}), perform the following:
-  1.  Analyze the provided festival poster ({{media url=posterDataUri}}) and slogan ("{{{slogan}}}") for its attractiveness, clarity, and appeal. Assign a 'posterScore' between 0 and 100. A higher score indicates a more effective poster and slogan.
-  2.  Estimate the 'totalExpectedVisitors' for the festival.
-  3.  Break down the total visitors into 'localVisitors' (residents from the immediate region) and 'externalVisitors' (tourists from other areas).
-  4.  Provide a brief 'analysisReasoning' in Korean explaining the key factors that influenced your visitor predictions and poster score. Consider festival type, duration, frequency, regional characteristics (like population), poster quality, and slogan impact.
+  1.  Estimate the 'totalExpectedVisitors' for the festival. Consider festival type, duration, frequency, and regional characteristics (like population).
 
   Festival Details:
   - 개최 지역: {{{region}}} (예상 인구: {{{estimatedLocalPopulation}}})
@@ -89,10 +78,8 @@ const prompt = ai.definePrompt({
   - 진행 기간: {{{duration}}}일
   - 연간 진행 횟수: {{{frequency}}}회
   - 축제 종류: {{{festivalType}}}
-  - 축제 슬로건: "{{{slogan}}}"
-  - 행사 포스터: {{media url=posterDataUri}}
 
-  Ensure your output strictly follows the JSON schema, providing all fields: 'posterScore', 'totalExpectedVisitors', 'localVisitors', 'externalVisitors', and 'analysisReasoning'. All text in 'analysisReasoning' must be in Korean.
+  Ensure your output strictly follows the JSON schema, providing the 'totalExpectedVisitors' field.
   Be realistic with visitor numbers based on the inputs. A small local festival will have fewer visitors than a major regional one.
   `,
 });

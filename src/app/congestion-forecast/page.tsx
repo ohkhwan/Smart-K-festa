@@ -7,8 +7,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { format } from 'date-fns';
 import { ko } from 'date-fns/locale';
 import { regions, getMunicipalitiesForRegion, type Municipality } from '@/lib/korea-regions';
-import { congestionForecastSchema, festivalTypes, type CongestionForecastFormValues, type CongestionForecastResults, type ActionResult } from '../schemas'; // Updated imports
-import { getCongestionForecastAction } from '../actions';
+import { congestionForecastSchema, festivalTypes, type CongestionForecastFormValues, type CongestionForecastResults, type PredictionApiPayload } from '../schemas'; // Updated imports, ActionResult and getCongestionForecastAction removed
 
 import { Button } from '@/components/ui/button';
 import { Calendar } from '@/components/ui/calendar';
@@ -78,13 +77,11 @@ export default function CongestionForecastPage() {
   const form = useForm<CongestionForecastFormValues>({
     resolver: zodResolver(congestionForecastSchema),
     defaultValues: {
-      date: undefined, // Initialize as undefined
-      duration: 1,
-      frequency: 1,
+      date: undefined,
       festivalType: undefined,
-      slogan: '',
       region: '',
       municipality: '',
+      budget: '',
     },
   });
 
@@ -166,74 +163,124 @@ export default function CongestionForecastPage() {
   };
 
   const onSubmit = async (data: CongestionForecastFormValues) => {
-    if (!posterFile) {
-      toast({
-        variant: "destructive",
-        title: "오류",
-        description: "행사 포스터 이미지를 업로드해주세요.",
-      });
-      return;
-    }
+    console.log('onSubmit triggered');
     setIsLoading(true);
     setResults(null);
 
-    const reader = new FileReader();
-    reader.readAsDataURL(posterFile);
-    reader.onload = async () => {
-        const posterDataUri = reader.result as string;
-        try {
-          const actionResult: ActionResult = await getCongestionForecastAction(data, posterDataUri);
-          if (actionResult.success && actionResult.data?.congestionForecast) {
-            setResults(actionResult.data as CongestionForecastResults);
-            toast({
-              title: "혼잡도 예측 완료",
-              description: "AI 예측 결과를 확인하세요.",
-            });
-          } else {
-            throw new Error(actionResult.error || 'AI 혼잡도 예측 결과를 가져오는데 실패했습니다.');
-          }
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : '데이터를 불러오는 중 오류가 발생했습니다.';
-          console.error('Submission error:', error);
-          toast({
-            variant: "destructive",
-            title: "오류 발생",
-            description: errorMessage,
-          });
-        } finally {
-          setIsLoading(false);
-        }
-    };
-    reader.onerror = () => {
-        toast({ variant: "destructive", title: "오류", description: "포스터 이미지 처리에 실패했습니다."});
+    // Validate required fields for the model that might not be caught by Zod if defaultValues are undefined
+    // and not yet touched by the user, although Zod should prevent submission.
+    // Date is initialized by useEffect, but festivalType might not be.
+    if (!data.date) {
+        toast({ variant: "destructive", title: "오류", description: "축제 시작일을 선택해주세요." });
+        console.error("Validation Error: 축제 시작일 is missing", data);
         setIsLoading(false);
-    };
+        form.setError("date", { type: "manual", message: "축제 시작일을 선택해주세요." });
+        return;
+    }
+    if (!data.festivalType) {
+        toast({ variant: "destructive", title: "오류", description: "축제 종류를 선택해주세요." });
+        setIsLoading(false);
+        console.error("Validation Error: 축제 종류 is missing", data);
+        form.setError("festivalType", { type: "manual", message: "축제 종류를 선택해주세요." });
+        return;
+    }
+
+    try {
+        // Ensure budget is a number
+        const budgetInMillions = parseFloat(data.budget.replace(/,/g, '')); // Remove commas before parsing
+        if (isNaN(budgetInMillions)) {
+             toast({ variant: "destructive", title: "오류", description: "예산을 숫자로 입력해주세요." });
+             setIsLoading(false);
+             console.error("Validation Error: 예산 is not a number", data.budget);
+             form.setError("budget", { type: "manual", message: "유효한 예산 금액을 입력해주세요." });
+             return;
+        }
+
+        // Get the 'dong' value from korea-regions.ts based on selected municipality
+        const selectedMunicipalityData = availableMunicipalities.find(m => m.value === data.municipality);
+        const dongForPayload = selectedMunicipalityData?.dong || ''; // Fallback to empty string if not found
+        if (!dongForPayload) {
+            toast({ variant: "destructive", title: "오류", description: "선택된 기초자치단체의 대표 동 정보를 찾을 수 없습니다." });
+            console.error("Data Error: 대표 동 정보 missing for municipality", data.municipality, selectedMunicipalityData);
+            setIsLoading(false);
+            return;
+        }
+
+        // Construct the final payload for the API
+        const finalPayload: PredictionApiPayload = {
+            '광역자치단체': data.region,
+            '기초자치단체 시/군/구': data.municipality,
+            '읍/면/동': dongForPayload,
+            '축제 시작일': format(data.date, 'yyyy-MM-dd'), // Format date as YYYY-MM-DD string
+            '축제 종류': data.festivalType,
+            '예산': budgetInMillions, // Use the parsed number
+        };
+
+        console.log("Sending payload to API /api/predict-visitors:", finalPayload);
+
+        const response = await fetch('/api/predict-visitors', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(finalPayload),
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ error: '응답 처리 중 오류 발생, 서버 응답 없음' }));
+            console.error("API Error Response:", errorData, "Status:", response.status);
+            throw new Error(errorData.error || `AI 방문객 예측 중 오류가 발생했습니다 (상태: ${response.status})`);
+        }
+
+        const resultData = await response.json();
+
+        if (resultData && resultData.congestionForecast && typeof resultData.congestionForecast.totalExpectedVisitors === 'number') {
+          setResults(resultData as CongestionForecastResults); // API가 CongestionForecastResults 구조와 일치하는 JSON 반환 가정
+          toast({
+            title: "방문객 예측 완료",
+            description: "AI 예측 결과를 확인하세요.",
+          });
+        } else {
+          console.error("API Error: Invalid data structure in response", resultData);
+          throw new Error('AI 방문객 예측 결과를 가져오는데 실패했습니다: 응답 데이터 형식이 올바르지 않습니다.');
+        }
+      }  catch (error) {
+        const errorMessage = error instanceof Error ? error.message : '데이터를 불러오는 중 오류가 발생했습니다.';
+        console.error('Submission error:', error);
+        toast({
+          variant: "destructive",
+          title: "오류 발생",
+          description: errorMessage,
+        });
+      } finally {
+        setIsLoading(false);
+      }
   };
 
   if (!isMounted) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-background text-foreground p-4 sm:p-6 md:p-8">
         <AnimatedSpinner className="h-12 w-12 text-primary" />
-        <p className="mt-2 text-muted-foreground">페이지를 불러오는 중입니다...</p>
+        <p className="mt-2 text-muted-foreground">페이지를 로딩 중입니다...</p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex flex-col items-center bg-background text-foreground p-4 sm:p-6 md:p-8">
-      <header className="w-full max-w-4xl mb-8 text-center">
+     <div className="min-h-screen flex flex-col items-center bg-background text-foreground p-4 sm:p-6 md:p-8">
+       <header className="w-full max-w-4xl mb-8 text-center">
         <div className="inline-flex items-center justify-center p-3 bg-primary text-primary-foreground rounded-lg shadow-md mb-4">
            <BarChart3 className="h-10 w-10" />
         </div>
-        <h1 className="text-4xl font-bold text-primary">AI 축제 혼잡도 예측</h1>
-        <p className="text-lg text-muted-foreground mt-2">AI를 통해 축제 예상 방문객 및 포스터 효과를 분석합니다.</p>
+        <h1 className="text-4xl font-bold text-primary">AI 축제 방문객 예측</h1>
+        <p className="text-lg text-muted-foreground mt-2">AI를 통해 축제 예상 방문객 정보를 분석합니다.</p>
       </header>
 
       <main className="w-full max-w-4xl">
         <Card className="shadow-xl">
           <CardHeader>
             <CardTitle className="text-2xl flex items-center gap-2"><Zap className="text-accent" />예측 정보 입력</CardTitle>
-            <CardDescription>AI 혼잡도 예측을 위한 축제 정보를 입력해주세요.</CardDescription>
+            <CardDescription>AI 방문객 예측을 위한 축제 정보를 입력해주세요.</CardDescription>
           </CardHeader>
           <CardContent>
             <Form {...form}>
@@ -272,7 +319,7 @@ export default function CongestionForecastPage() {
                         <FormLabel className="flex items-center gap-1"><MapPin size={16} /> 기초자치단체 / 시/군/구</FormLabel>
                         <Select
                           onValueChange={field.onChange}
-                          value={field.value} 
+                          value={field.value}
                           disabled={!watchedRegion || availableMunicipalities.length === 0}
                         >
                           <FormControl>
@@ -286,9 +333,19 @@ export default function CongestionForecastPage() {
                         <FormMessage />
                       </FormItem>
                     )}
-                  />
+                  />                  
                 </div>
-
+                <FormField
+                  control={form.control}
+                  name="budget"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>예산 (백만원)</FormLabel>
+                      <FormControl><Input type="text" placeholder="예: 500" {...field} /></FormControl> {/* Use type="text" for regex validation */}
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
                 <FormField
                   control={form.control}
                   name="date"
@@ -312,32 +369,6 @@ export default function CongestionForecastPage() {
                     </FormItem>
                   )}
                 />
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <FormField
-                    control={form.control}
-                    name="duration"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>진행 기간 (일)</FormLabel>
-                        <FormControl><Input type="number" placeholder="예: 3" {...field} onChange={e => field.onChange(parseInt(e.target.value,10) || 0)} /></FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="frequency"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>연간 진행 횟수</FormLabel>
-                        <FormControl><Input type="number" placeholder="예: 1" {...field} onChange={e => field.onChange(parseInt(e.target.value,10) || 0)}/></FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </div>
-
                 <FormField
                   control={form.control}
                   name="festivalType"
@@ -354,30 +385,8 @@ export default function CongestionForecastPage() {
                     </FormItem>
                   )}
                 />
-                <FormField
-                  control={form.control}
-                  name="slogan"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>축제 슬로건</FormLabel>
-                      <FormControl><Textarea placeholder="축제 슬로건을 입력하세요 (예: 함께 즐기는 도심 속 가을 축제!)" {...field} /></FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormItem>
-                  <FormLabel className="flex items-center gap-1"><ImageIcon size={16}/> 행사 포스터 업로드 (5MB 이하)</FormLabel>
-                  <FormControl><Input type="file" accept="image/*" onChange={handlePosterChange} /></FormControl>
-                  {posterPreview && (
-                    <div className="mt-2 relative w-full max-w-xs h-auto aspect-[3/4] border rounded-md overflow-hidden bg-gray-100">
-                       <Image src={posterPreview} alt="포스터 미리보기" layout="fill" objectFit="contain" />
-                    </div>
-                  )}
-                  <FormMessage>{!posterFile && form.formState.isSubmitted ? "포스터 이미지를 업로드해주세요." : ""}</FormMessage>
-                </FormItem>
-
                 <Button type="submit" disabled={isLoading} className="w-full bg-primary hover:bg-primary/90 text-primary-foreground">
-                  {isLoading ? (<><AnimatedSpinner className="mr-2 h-4 w-4" /> 예측 중...</>) : 'AI 혼잡도 예측 시작'}
+                  {isLoading ? (<><AnimatedSpinner className="mr-2 h-4 w-4" /> 예측 중...</>) : 'AI 방문객 예측 시작'}
                 </Button>
               </form>
             </Form>
@@ -387,37 +396,25 @@ export default function CongestionForecastPage() {
         {isLoading && (
           <div className="mt-8 text-center">
             <AnimatedSpinner className="mx-auto h-12 w-12 text-primary" />
-            <p className="mt-2 text-muted-foreground">AI가 혼잡도를 예측 중입니다. 잠시만 기다려주세요...</p>
+            <p className="mt-2 text-muted-foreground">AI가 방문객을 예측 중입니다. 잠시만 기다려주세요...</p>
           </div>
         )}
 
         {results && !isLoading && results.congestionForecast && (
           <Card className="mt-8 shadow-xl">
             <CardHeader>
-              <CardTitle className="text-2xl flex items-center gap-2"><Target className="text-accent" /> AI 예측 결과</CardTitle>
+              <CardTitle className="text-2xl flex items-center gap-2">
+                <Target className="text-accent" /> AI 예측 결과
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="p-4 border rounded-lg bg-secondary/30">
-                <h3 className="font-semibold text-lg text-primary flex items-center gap-2"><Percent className="h-5 w-5" /> 포스터 매력도 점수</h3>
-                <p className="text-3xl font-bold">{results.congestionForecast.posterScore} / 100점</p>
-              </div>
+              {/* 기존 posterScore, localVisitors, externalVisitors, analysisReasoning는 CongestionForecastOutput에 없으므로,
+                  totalExpectedVisitors만 표시하거나, CongestionForecastOutput 스키마를 확장해야 합니다.
+                  여기서는 totalExpectedVisitors만 표시하는 것으로 가정합니다.
+              */}
               <div className="p-4 border rounded-lg bg-secondary/30">
                 <h3 className="font-semibold text-lg text-primary flex items-center gap-2"><Users className="h-5 w-5" /> 예상 총 방문객 수</h3>
                 <p className="text-3xl font-bold">{results.congestionForecast.totalExpectedVisitors.toLocaleString('ko-KR')} 명</p>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="p-4 border rounded-lg bg-secondary/30">
-                  <h3 className="font-semibold text-lg text-primary flex items-center gap-2"><User className="h-5 w-5" /> 예상 현지인 방문객</h3>
-                  <p className="text-2xl font-bold">{results.congestionForecast.localVisitors.toLocaleString('ko-KR')} 명</p>
-                </div>
-                <div className="p-4 border rounded-lg bg-secondary/30">
-                  <h3 className="font-semibold text-lg text-primary flex items-center gap-2"><Users2 className="h-5 w-5" /> 예상 외지인 방문객</h3>
-                  <p className="text-2xl font-bold">{results.congestionForecast.externalVisitors.toLocaleString('ko-KR')} 명</p>
-                </div>
-              </div>
-               <div className="p-4 border rounded-lg bg-secondary/30">
-                <h3 className="font-semibold text-lg text-primary">분석 근거</h3>
-                <p className="mt-1 text-sm whitespace-pre-line">{results.congestionForecast.analysisReasoning}</p>
               </div>
             </CardContent>
           </Card>
@@ -429,10 +426,3 @@ export default function CongestionForecastPage() {
     </div>
   );
 }
-    
-
-    
-
-    
-
-    

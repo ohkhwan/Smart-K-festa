@@ -9,7 +9,7 @@ import { BarChart3, Lightbulb, Map, FileText, Presentation } from 'lucide-react'
 
 const menuItems = [
   { href: '/', label: 'AI 축제 컨설팅', icon: Lightbulb },
-  { href: '/congestion-forecast', label: 'AI 축제 혼잡도 예측', icon: BarChart3 },
+  { href: '/congestion-forecast', label: 'AI 축제 방문객 예측', icon: BarChart3 },
   { href: '/realtime-dashboard', label: '실시간 축제 현황분석', icon: Map },
   { href: '/satisfaction-report', label: '축제 만족도 리포트', icon: FileText },
 ];

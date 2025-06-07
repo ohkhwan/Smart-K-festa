@@ -2,10 +2,9 @@
 'use server';
 
 import { festivalPlanning, type FestivalPlanningInput, type FestivalPlanningOutput } from '@/ai/flows/festival-planning';
-import { congestionForecast, type CongestionForecastInput, type CongestionForecastOutput } from '@/ai/flows/congestion-forecast-flow';
 import { 
+    type PredictionApiPayload,
     type FestivalConsultingFormValues, 
-    type CongestionForecastFormValues,
     type ActionResult, // Import ActionResult from schemas
     type FestivalConsultationResults, // Import FestivalConsultationResults from schemas
     type CongestionForecastResults // Import CongestionForecastResults from schemas
@@ -53,32 +52,45 @@ export async function getFestivalConsultationAction(values: FestivalConsultingFo
 }
 
 // New Action for Congestion Forecast
-export async function getCongestionForecastAction(values: CongestionForecastFormValues, posterDataUri: string): Promise<ActionResult> {
+export async function getCongestionForecastAction(payload: PredictionApiPayload): Promise<ActionResult> {
   try {
-    const formattedDate = format(values.date, 'yyyy-MM-dd');
-    const regionLabel = getRegionLabel(values.region);
-    const fullRegionInfo = `${regionLabel} ${values.municipality}`;
+    // The 'payload' already contains the necessary data structured for the Python script.
+    // If your AI flow (congestionForecast) needs a different structure (CongestionForecastInput),
+    // you would map 'payload' to 'CongestionForecastInput' here.
+    // However, the goal is to send 'payload' to the Python script via an API route.
 
-    const input: CongestionForecastInput = {
-      date: formattedDate,
-      duration: values.duration,
-      frequency: values.frequency,
-      festivalType: values.festivalType,
-      posterDataUri: posterDataUri,
-      slogan: values.slogan,
-      region: fullRegionInfo,
-    };
+    // Make the API call to your backend endpoint that runs the Python script
+    // Ensure NEXT_PUBLIC_APP_URL is set in your environment variables
+    const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/predict-visitors`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload), // Send the structured payload
+    });
 
-    const result = await congestionForecast(input);
-    
-    const resultsData: CongestionForecastResults = { // Explicitly type for clarity
-        congestionForecast: result,
-    };
+    if (!response.ok) {
+      const errorBody = await response.json();
+      return { success: false, error: errorBody.message || `API Error: ${response.status}` };
+    }
 
-    return {
-      success: true,
-      data: resultsData,
-    };
+    const resultFromApi: { success: boolean; predictedVisitors?: number; message?: string } = await response.json();
+
+    // Ensure predictedVisitors is a number if success is true
+    if (resultFromApi.success && typeof resultFromApi.predictedVisitors === 'number') {
+      // Construct CongestionForecastResults based on the API response.
+      // CongestionForecastOutput currently only has totalExpectedVisitors.
+      // If your Python script or API flow provides more, update CongestionForecastOutput in schemas.ts
+      const resultsData: CongestionForecastResults = {
+        congestionForecast: { // This object should match CongestionForecastOutput
+          totalExpectedVisitors: resultFromApi.predictedVisitors
+ }
+      };
+      return { success: true, data: resultsData };
+    } else {
+      // Handle cases where API might return success: true but no predictedVisitors, or success: false
+      return { success: false, error: resultFromApi.message || '예측 결과를 가져오는데 실패했습니다.' };
+    }
   } catch (error) {
     console.error('Error in getCongestionForecastAction:', error);
     return {
