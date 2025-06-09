@@ -14,24 +14,24 @@ steps:
     id: BuildDockerImage
     args:
       - 'build'
+      - '--no-cache' # 캐시 비활성화로 최신 requirements.txt 반영
       - '-t'
       - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA'
       - '-t'
       - 'gcr.io/$PROJECT_ID/smart-k-festa-image:latest'
       - '.' # Dockerfile이 프로젝트 루트에 있다고 가정
 
-  # Step 3: Python 의존성 설치 확인 (선택적)
+  # Step 3: Python 의존성 설치 확인
   - name: 'gcr.io/cloud-builders/docker'
     id: VerifyPythonDependencies
     args:
       - 'run'
       - '--rm'
       - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA'
-      - 'python3'
+      - '/app/venv/bin/python'
       - '-c'
-      - 'import pkg_resources; [pkg_resources.get_distribution(p) for p in open("requirements.txt").read().splitlines() if p and not p.startswith("#")]'
+      - 'import joblib, ipython, jedi, jupyter_client, jupyter_core; print("joblib version:", joblib.__version__)'
     waitFor: ['BuildDockerImage']
-    # 이 단계는 requirements.txt에 명시된 패키지가 설치되었는지 확인합니다.
 
   # Step 4: Docker 이미지 푸시
   - name: 'gcr.io/cloud-builders/docker'
