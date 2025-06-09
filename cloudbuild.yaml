@@ -14,12 +14,12 @@ steps:
     id: BuildDockerImage
     args:
       - 'build'
-      - '--no-cache' # 캐시 비활성화로 최신 requirements.txt 반영
+      - '--no-cache'  # 캐시 비활성화로 최신 requirements.txt 반영
       - '-t'
       - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA'
       - '-t'
       - 'gcr.io/$PROJECT_ID/smart-k-festa-image:latest'
-      - '.' # Dockerfile이 프로젝트 루트에 있다고 가정
+      - '.'  # Dockerfile이 프로젝트 루트에 있다고 가정
 
   # Step 3: Python 의존성 설치 확인
   - name: 'gcr.io/cloud-builders/docker'
@@ -31,7 +31,8 @@ steps:
       - '/app/venv/bin/python'
       - '-c'
       - 'import joblib, ipython, jedi, jupyter_client, jupyter_core; print("joblib version:", joblib.__version__)'
-    waitFor: ['BuildDockerImage']
+    waitFor:
+      - 'BuildDockerImage'
 
   # Step 4: Docker 이미지 푸시
   - name: 'gcr.io/cloud-builders/docker'
@@ -40,16 +41,19 @@ steps:
       - 'push'
       - '--all-tags'
       - 'gcr.io/$PROJECT_ID/smart-k-festa-image'
-    waitFor: ['BuildDockerImage', 'AuthenticateGCR']
+    waitFor:
+      - 'BuildDockerImage'
+      - 'AuthenticateGCR'
 
 # 푸시할 이미지 지정
 images:
   - 'gcr.io/$PROJECT_ID/smart-k-festa-image'
 
 # 글로벌 타임아웃
-timeout: 2400s # 40분
+timeout: 2400s  # 40분
 
 # 로그 설정
 options:
   logging: CLOUD_LOGGING_ONLY
+
 
