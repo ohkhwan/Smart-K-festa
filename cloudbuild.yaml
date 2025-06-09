@@ -38,3 +38,6 @@ images:
 
 # Optional: Define a global timeout for the entire build process.
 timeout: 1800s # 30 minutes
+
+options:
+  logging: NONE
