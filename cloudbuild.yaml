@@ -1,43 +1,55 @@
+yaml
+
 steps:
-  # Step 1: Build the Docker image using the Dockerfile from the project root.
-  # This image will contain Node.js, Next.js, Python, and all necessary dependencies.
+  # Step 1: GCR 인증
+  - name: 'gcr.io/cloud-builders/docker'
+    id: AuthenticateGCR
+    args:
+      - 'auth'
+      - 'configure-docker'
+      - 'gcr.io'
+
+  # Step 2: Docker 이미지 빌드
   - name: 'gcr.io/cloud-builders/docker'
     id: BuildDockerImage
     args:
       - 'build'
       - '-t'
-      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA' # Tag with commit SHA for versioning
-      - '-t'
-      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:latest'     # Also tag as 'latest'
-      - '.' # Context for the Docker build (project root, where Dockerfile is)
-    # Optional: Increase timeout if your build takes longer
-    timeout: 1200s # 20 minutes
-
-  # Step 2: Push the built Docker image to Google Container Registry (GCR).
-  # This makes the image available for deployment (e.g., to Cloud Run).
-  - name: 'gcr.io/cloud-builders/docker'
-    id: PushDockerImageSpecificTag
-    args:
-      - 'push'
       - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA'
-    # This step depends on the previous one completing successfully.
-    waitFor: ['BuildDockerImage']
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:latest'
+      - '.' # Dockerfile이 프로젝트 루트에 있다고 가정
 
+  # Step 3: Python 의존성 설치 확인 (선택적)
   - name: 'gcr.io/cloud-builders/docker'
-    id: PushDockerImageLatestTag
+    id: VerifyPythonDependencies
+    args:
+      - 'run'
+      - '--rm'
+      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA'
+      - 'python3'
+      - '-c'
+      - 'import pkg_resources; [pkg_resources.get_distribution(p) for p in open("requirements.txt").read().splitlines() if p and not p.startswith("#")]'
+    waitFor: ['BuildDockerImage']
+    # 이 단계는 requirements.txt에 명시된 패키지가 설치되었는지 확인합니다.
+
+  # Step 4: Docker 이미지 푸시
+  - name: 'gcr.io/cloud-builders/docker'
+    id: PushDockerImage
     args:
       - 'push'
-      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:latest'
-    # This step also depends on the build completing successfully.
-    waitFor: ['BuildDockerImage']
+      - '--all-tags'
+      - 'gcr.io/$PROJECT_ID/smart-k-festa-image'
+    waitFor: ['BuildDockerImage', 'AuthenticateGCR']
 
-# Specify the image(s) to be pushed to GCR after a successful build.
+# 푸시할 이미지 지정
 images:
-  - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA'
-  - 'gcr.io/$PROJECT_ID/smart-k-festa-image:latest'
+  - 'gcr.io/$PROJECT_ID/smart-k-festa-image'
 
-# Optional: Define a global timeout for the entire build process.
-timeout: 1800s # 30 minutes
+# 글로벌 타임아웃
+timeout: 2400s # 40분
 
+# 로그 설정
 options:
-  logging: NONE
+  logging: CLOUD_LOGGING_ONLY
+
