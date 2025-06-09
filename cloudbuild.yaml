@@ -1,22 +1,40 @@
 steps:
-  # 사용할 베이스 이미지 선택 (Python 3.9)
-  - name: 'python:3.9-slim'
-    id: install_dependencies
-    # 작업 디렉토리 설정 (저장소 루트)
-    dir: /workspace
-    # requirements.txt 파일이 있는 경우, 필요한 종속성 설치
-    entrypoint: 'pip'
-    args: ['install', '-r', 'requirements.txt']
+  # Step 1: Build the Docker image using the Dockerfile from the project root.
+  # This image will contain Node.js, Next.js, Python, and all necessary dependencies.
+  - name: 'gcr.io/cloud-builders/docker'
+    id: BuildDockerImage
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA' # Tag with commit SHA for versioning
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:latest'     # Also tag as 'latest'
+      - '.' # Context for the Docker build (project root, where Dockerfile is)
+    # Optional: Increase timeout if your build takes longer
+    timeout: 1200s # 20 minutes
 
-  # 실제 빌드 및 테스트 (예시)
-  - name: 'python:3.9-slim'
-    id: run_tests
-    # 작업 디렉토리 설정 (저장소 루트)
-    dir: /workspace
-    entrypoint: 'python'
-    # 테스트 실행 명령어 (예시)
-    args: ['-m', 'unittest', 'discover']
+  # Step 2: Push the built Docker image to Google Container Registry (GCR).
+  # This makes the image available for deployment (e.g., to Cloud Run).
+  - name: 'gcr.io/cloud-builders/docker'
+    id: PushDockerImageSpecificTag
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA'
+    # This step depends on the previous one completing successfully.
+    waitFor: ['BuildDockerImage']
 
-# 빌드 결과 이미지 저장 (선택 사항, 필요한 경우)
+  - name: 'gcr.io/cloud-builders/docker'
+    id: PushDockerImageLatestTag
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:latest'
+    # This step also depends on the build completing successfully.
+    waitFor: ['BuildDockerImage']
+
+# Specify the image(s) to be pushed to GCR after a successful build.
 images:
-  - 'gcr.io/$PROJECT_ID/smart-k-festa-image'
+  - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/smart-k-festa-image:latest'
+
+# Optional: Define a global timeout for the entire build process.
+timeout: 1800s # 30 minutes
