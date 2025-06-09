@@ -7,58 +7,47 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { format } from 'date-fns';
 import { ko } from 'date-fns/locale';
 import { regions, getMunicipalitiesForRegion, type Municipality } from '@/lib/korea-regions';
-import { congestionForecastSchema, festivalTypes, type CongestionForecastFormValues, type CongestionForecastResults, type PredictionApiPayload } from '../schemas'; // Updated imports, ActionResult and getCongestionForecastAction removed
+import { congestionForecastSchema, festivalTypes, type CongestionForecastFormValues, type CongestionForecastResults } from '../schemas';
+import { getCongestionForecastAction } from '../actions'; // Import the server action
 
 import { Button } from '@/components/ui/button';
 import { Calendar } from '@/components/ui/calendar';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Textarea } from '@/components/ui/textarea';
 import { useToast } from "@/hooks/use-toast";
 import { AnimatedSpinner } from '@/components/icons/AnimatedSpinner';
-import { BarChart3, CalendarDays, Users, MapPin, ImageIcon, Zap, Target, Percent, User, Users2 } from 'lucide-react';
-import Image from 'next/image';
+import { BarChart3, CalendarDays, Users, MapPin, Zap, Target } from 'lucide-react';
 
 // Helper function to simulate fetching population
 const getSimulatedPopulation = (region: string, municipality: string): string => {
   if (!region || !municipality) return "지역을 선택해주세요";
 
   let finalPopulation: number | null = null;
-
-  // Rule 1: Major metropolitan areas (광역)
   if (region.includes('서울') || region.includes('부산') || region.includes('인천')) {
     finalPopulation = 300000 + Math.floor(Math.random() * 200000);
   }
-  // Rule 2: Gyeonggi-do (광역)
   else if (region.includes('경기')) {
     finalPopulation = 150000 + Math.floor(Math.random() * 150000);
   }
 
-  // Rule 3: 'Gu' type municipality (기초) in major cities - can override or set if null
   if (municipality.includes('구')) {
     if (region.includes('서울') || region.includes('부산') || region.includes('인천') || region.includes('대구') || region.includes('광주') || region.includes('대전') || region.includes('울산')) {
       const guEstimate = 200000 + Math.floor(Math.random() * 300000);
-      // If finalPopulation was null from regional rules, use guEstimate. Otherwise, take the max.
-      // This ensures 'Gu' in a major city has a substantial population.
       finalPopulation = Math.max(finalPopulation ?? 0, guEstimate);
     }
   }
-  // Rule 4: 'Gun' type municipality (기초), only if not a 'Gu' and no broader regional rule has set it.
   else if (municipality.includes('군')) {
-    if (finalPopulation === null) { // Apply only if no specific regional population was determined yet
+    if (finalPopulation === null) {
       finalPopulation = 20000 + Math.floor(Math.random() * 30000);
     }
   }
 
-  // If after all specific rules, finalPopulation is still null, it means this combination
-  // doesn't have a specific population estimate in our simulation.
   if (finalPopulation === null) {
     return "선택하신 자치단체의 예상 인구수 정보가 제공되지 않습니다.";
   }
-
   return `${finalPopulation.toLocaleString('ko-KR')} 명 (예상치)`;
 };
 
@@ -67,12 +56,9 @@ export default function CongestionForecastPage() {
   const [isLoading, setIsLoading] = React.useState(false);
   const [results, setResults] = React.useState<CongestionForecastResults | null>(null);
   const [availableMunicipalities, setAvailableMunicipalities] = React.useState<Municipality[]>([]);
-  const [posterPreview, setPosterPreview] = React.useState<string | null>(null);
-  const [posterFile, setPosterFile] = React.useState<File | null>(null);
   const [estimatedPopulation, setEstimatedPopulation] = React.useState<string>('');
   const { toast } = useToast();
   const [isMounted, setIsMounted] = React.useState(false);
-
 
   const form = useForm<CongestionForecastFormValues>({
     resolver: zodResolver(congestionForecastSchema),
@@ -87,8 +73,7 @@ export default function CongestionForecastPage() {
 
   React.useEffect(() => {
     setIsMounted(true);
-    // Set the date only on the client-side after mount
-    if (!form.getValues('date')) { // Only set if not already set (e.g. by user interaction before mount)
+    if (!form.getValues('date')) {
         form.setValue('date', new Date());
     }
   }, [form]);
@@ -96,37 +81,25 @@ export default function CongestionForecastPage() {
   const watchedRegion = form.watch('region');
   const watchedMunicipality = form.watch('municipality');
 
-  // Effect to update available municipalities and reset municipality field when region changes
   React.useEffect(() => {
     if (!isMounted) return; 
-
     if (watchedRegion) {
       const newMunicipalities = getMunicipalitiesForRegion(watchedRegion);
       setAvailableMunicipalities(newMunicipalities);
-      // If the currently selected municipality is not in the new list, reset it.
-      // Also reset if the region itself changed.
       const currentMunicipality = form.getValues('municipality');
       if (currentMunicipality && !newMunicipalities.find(m => m.value === currentMunicipality)) {
           form.setValue('municipality', '', { shouldValidate: true });
-      } else if (watchedRegion !== form.getValues('region') && currentMunicipality) {
-          // This condition handles resetting if the region value itself changes, not just the list.
-          // This part might be redundant if the above check is sufficient.
-          // For safety, if a new region is selected, reset municipality.
       }
     } else {
       setAvailableMunicipalities([]);
       form.setValue('municipality', '', { shouldValidate: true });
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [watchedRegion, form, isMounted]); // Removed form.getValues from deps, as it can cause issues
+  }, [watchedRegion, form, isMounted]); 
 
-  // Effect to update estimated population when region or municipality changes
   React.useEffect(() => {
     if (!isMounted) return; 
-
     if (watchedRegion && watchedMunicipality) {
       const regionLabel = regions.find(r => r.value === watchedRegion)?.label || watchedRegion;
-      // availableMunicipalities should be up-to-date from the previous effect
       const muniObj = availableMunicipalities.find(m => m.value === watchedMunicipality);
       const municipalityLabel = muniObj?.label || watchedMunicipality;
       setEstimatedPopulation(getSimulatedPopulation(regionLabel, municipalityLabel));
@@ -135,114 +108,27 @@ export default function CongestionForecastPage() {
     }
   }, [watchedRegion, watchedMunicipality, isMounted, availableMunicipalities]);
 
-
-  const handlePosterChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      if (file.size > 5 * 1024 * 1024) { // 5MB limit
-        toast({
-          variant: "destructive",
-          title: "파일 크기 초과",
-          description: "포스터 이미지 파일은 5MB를 초과할 수 없습니다.",
-        });
-        event.target.value = ''; // Clear the input
-        setPosterFile(null);
-        setPosterPreview(null);
-        return;
-      }
-      setPosterFile(file);
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setPosterPreview(reader.result as string);
-      };
-      reader.readAsDataURL(file);
-    } else {
-      setPosterFile(null);
-      setPosterPreview(null);
-    }
-  };
-
   const onSubmit = async (data: CongestionForecastFormValues) => {
-    console.log('onSubmit triggered');
     setIsLoading(true);
     setResults(null);
 
-    // Validate required fields for the model that might not be caught by Zod if defaultValues are undefined
-    // and not yet touched by the user, although Zod should prevent submission.
-    // Date is initialized by useEffect, but festivalType might not be.
-    if (!data.date) {
-        toast({ variant: "destructive", title: "오류", description: "축제 시작일을 선택해주세요." });
-        console.error("Validation Error: 축제 시작일 is missing", data);
+    if (!data.date || !data.festivalType || !data.region || !data.municipality || !data.budget) {
+        toast({ variant: "destructive", title: "오류", description: "모든 필수 입력값을 채워주세요." });
         setIsLoading(false);
-        form.setError("date", { type: "manual", message: "축제 시작일을 선택해주세요." });
         return;
     }
-    if (!data.festivalType) {
-        toast({ variant: "destructive", title: "오류", description: "축제 종류를 선택해주세요." });
-        setIsLoading(false);
-        console.error("Validation Error: 축제 종류 is missing", data);
-        form.setError("festivalType", { type: "manual", message: "축제 종류를 선택해주세요." });
-        return;
-    }
-
+    
     try {
-        // Ensure budget is a number
-        const budgetInMillions = parseFloat(data.budget.replace(/,/g, '')); // Remove commas before parsing
-        if (isNaN(budgetInMillions)) {
-             toast({ variant: "destructive", title: "오류", description: "예산을 숫자로 입력해주세요." });
-             setIsLoading(false);
-             console.error("Validation Error: 예산 is not a number", data.budget);
-             form.setError("budget", { type: "manual", message: "유효한 예산 금액을 입력해주세요." });
-             return;
-        }
+        const actionResult = await getCongestionForecastAction(data);
 
-        // Get the 'dong' value from korea-regions.ts based on selected municipality
-        const selectedMunicipalityData = availableMunicipalities.find(m => m.value === data.municipality);
-        const dongForPayload = selectedMunicipalityData?.dong || ''; // Fallback to empty string if not found
-        if (!dongForPayload) {
-            toast({ variant: "destructive", title: "오류", description: "선택된 기초자치단체의 대표 동 정보를 찾을 수 없습니다." });
-            console.error("Data Error: 대표 동 정보 missing for municipality", data.municipality, selectedMunicipalityData);
-            setIsLoading(false);
-            return;
-        }
-
-        // Construct the final payload for the API
-        const finalPayload: PredictionApiPayload = {
-            '광역자치단체': data.region,
-            '기초자치단체 시/군/구': data.municipality,
-            '읍/면/동': dongForPayload,
-            '축제 시작일': format(data.date, 'yyyy-MM-dd'), // Format date as YYYY-MM-DD string
-            '축제 종류': data.festivalType,
-            '예산': budgetInMillions, // Use the parsed number
-        };
-
-        console.log("Sending payload to API /api/predict-visitors:", finalPayload);
-
-        const response = await fetch('/api/predict-visitors', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(finalPayload),
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({ error: '응답 처리 중 오류 발생, 서버 응답 없음' }));
-            console.error("API Error Response:", errorData, "Status:", response.status);
-            throw new Error(errorData.error || `AI 방문객 예측 중 오류가 발생했습니다 (상태: ${response.status})`);
-        }
-
-        const resultData = await response.json();
-
-        if (resultData && resultData.congestionForecast && typeof resultData.congestionForecast.totalExpectedVisitors === 'number') {
-          setResults(resultData as CongestionForecastResults); // API가 CongestionForecastResults 구조와 일치하는 JSON 반환 가정
+        if (actionResult.success && actionResult.data?.congestionForecast) {
+          setResults(actionResult.data as CongestionForecastResults);
           toast({
             title: "방문객 예측 완료",
             description: "AI 예측 결과를 확인하세요.",
           });
         } else {
-          console.error("API Error: Invalid data structure in response", resultData);
-          throw new Error('AI 방문객 예측 결과를 가져오는데 실패했습니다: 응답 데이터 형식이 올바르지 않습니다.');
+          throw new Error(actionResult.error || 'AI 방문객 예측 결과를 가져오는데 실패했습니다.');
         }
       }  catch (error) {
         const errorMessage = error instanceof Error ? error.message : '데이터를 불러오는 중 오류가 발생했습니다.';
@@ -295,7 +181,6 @@ export default function CongestionForecastPage() {
                         <Select
                           onValueChange={(value) => {
                             field.onChange(value);
-                            // Reset municipality when region changes - handled by useEffect
                             form.setValue('municipality', '', { shouldValidate: true });
                           }}
                           defaultValue={field.value}
@@ -341,7 +226,7 @@ export default function CongestionForecastPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>예산 (백만원)</FormLabel>
-                      <FormControl><Input type="text" placeholder="예: 500" {...field} /></FormControl> {/* Use type="text" for regex validation */}
+                      <FormControl><Input type="text" placeholder="예: 50 (5천만원에 해당)" {...field} /></FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -408,13 +293,10 @@ export default function CongestionForecastPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* 기존 posterScore, localVisitors, externalVisitors, analysisReasoning는 CongestionForecastOutput에 없으므로,
-                  totalExpectedVisitors만 표시하거나, CongestionForecastOutput 스키마를 확장해야 합니다.
-                  여기서는 totalExpectedVisitors만 표시하는 것으로 가정합니다.
-              */}
               <div className="p-4 border rounded-lg bg-secondary/30">
                 <h3 className="font-semibold text-lg text-primary flex items-center gap-2"><Users className="h-5 w-5" /> 예상 총 방문객 수</h3>
                 <p className="text-3xl font-bold">{results.congestionForecast.totalExpectedVisitors.toLocaleString('ko-KR')} 명</p>
+                <p className="text-xs text-muted-foreground mt-1">이 수치는 AI 모델에 의한 추정치이며, 실제 방문객 수와 다를 수 있습니다.</p>
               </div>
             </CardContent>
           </Card>

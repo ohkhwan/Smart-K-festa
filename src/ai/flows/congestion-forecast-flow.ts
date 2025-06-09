@@ -1,7 +1,7 @@
 
 'use server';
 /**
- * @fileOverview A festival congestion forecasting AI agent.
+ * @fileOverview A festival congestion forecasting AI agent using LLM estimation.
  *
  * - congestionForecast - A function that handles the festival congestion forecast process.
  * - CongestionForecastInput - The input type for the congestionForecast function.
@@ -11,42 +11,13 @@
 import {ai} from '@/ai/genkit';
 import {z} from 'genkit';
 
-// Tool to simulate fetching local population data
-const getRegionPopulationTool = ai.defineTool(
-  {
-    name: 'getRegionPopulationTool',
-    description: 'Simulates fetching estimated population for a given Korean region (e.g., "서울특별시 강남구").',
-    inputSchema: z.object({
-      region: z.string().describe('The full region name including municipality, e.g., "서울특별시 강남구".'),
-    }),
-    outputSchema: z.object({
-      population: z.number().describe('Estimated population of the region.'),
-    }),
-  },
-  async ({ region }) => {
-    // Simulate population based on keywords. This is a very rough estimation.
-    // In a real scenario, this would query a database or an external API.
-    let population = 50000; // Default small city/district
-    if (region.includes('서울') || region.includes('부산') || region.includes('인천') || region.includes('대구') || region.includes('광주') || region.includes('대전') || region.includes('울산')) {
-      population = 300000; // Larger metropolitan city district
-      if (region.includes('강남') || region.includes('서초') || region.includes('송파')) population = 500000;
-      if (region.includes('해운대')) population = 400000;
-    } else if (region.includes('수원') || region.includes('성남') || region.includes('고양') || region.includes('용인')) {
-      population = 200000; // Large city
-    } else if (region.includes('군') || region.includes('면')) {
-      population = 20000; // Rural area
-    }
-    // Add some randomness
-    population = Math.floor(population * (0.8 + Math.random() * 0.4));
-    return { population };
-  }
-);
-
-
 const CongestionForecastInputSchema = z.object({
+  regionName: z.string().describe('축제 개최 광역자치단체 (예: "서울특별시", "경기도").'),
+  municipalityName: z.string().describe('축제 개최 기초자치단체 (예: "강남구", "수원시").'),
+  dongName: z.string().optional().describe('축제 개최 읍/면/동 (선택 사항, 예: "역삼동").'),
   date: z.string().describe('축제 시작일 (YYYY-MM-DD).'),
-  festivalType: z.string().describe('축제 종류 (예: 문화관광, 지역특산물).'),
-  region: z.string().describe('축제 개최 지역 (광역자치단체 + 기초자치단체, 예: "서울특별시 강남구").'),
+  festivalType: z.string().describe('축제 종류 (예: 문화관광, 지역특산물, 체험).'),
+  budget: z.number().describe('축제 예산 (백만원 단위).'),
 });
 export type CongestionForecastInput = z.infer<typeof CongestionForecastInputSchema>;
 
@@ -61,26 +32,30 @@ export async function congestionForecast(input: CongestionForecastInput): Promis
 
 const prompt = ai.definePrompt({
   name: 'congestionForecastPrompt',
-  input: { schema: CongestionForecastInputSchema.extend({ estimatedLocalPopulation: z.number() }) }, // Add population here
+  input: { schema: CongestionForecastInputSchema },
   output: { schema: CongestionForecastOutputSchema },
-  tools: [getRegionPopulationTool], // Make tool available
-  prompt: `You are an AI expert specializing in forecasting festival attendance. Your responses must be in Korean.
+  prompt: `You are an AI expert specializing in forecasting festival attendance in South Korea. Your responses must be in Korean.
 
-  You will receive details about an upcoming festival: date, duration, frequency, type, and region.
-  First, use the 'getRegionPopulationTool' to get the estimated population for the 'region' provided in the input.
-
-  Based on all this information, including the estimated local population ({{{estimatedLocalPopulation}}}), perform the following:
-  1.  Estimate the 'totalExpectedVisitors' for the festival. Consider festival type, duration, frequency, and regional characteristics (like population).
+  Based on the following festival details, estimate the 'totalExpectedVisitors'.
+  Consider factors like:
+  - Location: The combination of 'regionName', 'municipalityName', and 'dongName' (if provided) will give you a sense of population density and accessibility. For example, a festival in "서울특별시 강남구" will likely attract more visitors than one in a rural '면' if other factors are similar.
+  - Date: Consider the time of year (seasonality) and day of the week if inferable (though only date is provided).
+  - Festival Type: Some types of festivals (e.g., major cultural events, popular music festivals) naturally draw larger crowds than niche or local community events.
+  - Budget: A larger budget often implies a larger scale festival with more marketing, potentially attracting more visitors.
 
   Festival Details:
-  - 개최 지역: {{{region}}} (예상 인구: {{{estimatedLocalPopulation}}})
+  - 개최 광역단체: {{{regionName}}}
+  - 개최 기초단체: {{{municipalityName}}}
+  {{#if dongName}}
+  - 개최 읍/면/동: {{{dongName}}}
+  {{/if}}
   - 축제 시작일: {{{date}}}
-  - 진행 기간: {{{duration}}}일
-  - 연간 진행 횟수: {{{frequency}}}회
   - 축제 종류: {{{festivalType}}}
+  - 예산 (백만원): {{{budget}}}
 
-  Ensure your output strictly follows the JSON schema, providing the 'totalExpectedVisitors' field.
-  Be realistic with visitor numbers based on the inputs. A small local festival will have fewer visitors than a major regional one.
+  Provide your best estimate for 'totalExpectedVisitors'.
+  Be realistic. A small local festival with a low budget will have far fewer visitors than a large, well-funded festival in a major city.
+  Output only a JSON object matching the defined schema.
   `,
 });
 
@@ -91,15 +66,12 @@ const congestionForecastFlow = ai.defineFlow(
     outputSchema: CongestionForecastOutputSchema,
   },
   async (input) => {
-    // Call the tool to get population first
-    const populationData = await getRegionPopulationTool({ region: input.region });
-    const estimatedLocalPopulation = populationData.population;
-
-    // Now call the main prompt with the enriched input
-    const {output} = await prompt({ ...input, estimatedLocalPopulation });
+    const {output} = await prompt(input);
     if (!output) {
       throw new Error("AI did not return an output for congestion forecast.");
     }
+    // Add a small random factor to make results seem less deterministic for LLM estimations if needed
+    // output.totalExpectedVisitors = Math.max(0, Math.floor(output.totalExpectedVisitors * (0.9 + Math.random() * 0.2)));
     return output;
   }
 );

@@ -2,23 +2,35 @@
 'use server';
 
 import { festivalPlanning, type FestivalPlanningInput, type FestivalPlanningOutput } from '@/ai/flows/festival-planning';
+import { congestionForecast, type CongestionForecastInput } from '@/ai/flows/congestion-forecast-flow'; // Updated import
 import { 
-    type PredictionApiPayload,
     type FestivalConsultingFormValues, 
-    type ActionResult, // Import ActionResult from schemas
-    type FestivalConsultationResults, // Import FestivalConsultationResults from schemas
-    type CongestionForecastResults // Import CongestionForecastResults from schemas
+    type ActionResult, 
+    type FestivalConsultationResults, 
+    type CongestionForecastResults,
+    type CongestionForecastFormValues // Added for new action
 } from './schemas';
 import { format } from 'date-fns';
-import { regions as regionData } from '@/lib/korea-regions';
+import { regions as regionData, getMunicipalitiesForRegion, type Municipality } from '@/lib/korea-regions';
 
-// getRegionLabel is now an internal helper function, not exported
 const getRegionLabel = (regionValue: string) => {
   const region = regionData.find(r => r.value === regionValue);
   return region ? region.label : regionValue;
-}
+};
 
-// Action for Festival Consultation
+const getMunicipalityLabel = (regionValue: string, municipalityValue: string) => {
+  const municipalities = getMunicipalitiesForRegion(regionValue);
+  const municipality = municipalities.find(m => m.value === municipalityValue);
+  return municipality ? municipality.label : municipalityValue;
+};
+
+const getDongForMunicipality = (regionValue: string, municipalityValue: string): string | undefined => {
+    const municipalities = getMunicipalitiesForRegion(regionValue);
+    const municipality = municipalities.find(m => m.value === municipalityValue);
+    return municipality?.dong;
+};
+
+
 export async function getFestivalConsultationAction(values: FestivalConsultingFormValues): Promise<ActionResult> {
   try {
     const formattedDate = format(values.date, 'yyyy-MM-dd');
@@ -34,7 +46,7 @@ export async function getFestivalConsultationAction(values: FestivalConsultingFo
 
     const festivalResult = await festivalPlanning(festivalInput);
     
-    const resultsData: FestivalConsultationResults = { // Explicitly type for clarity
+    const resultsData: FestivalConsultationResults = { 
         festivalPlanning: festivalResult,
     };
 
@@ -51,48 +63,38 @@ export async function getFestivalConsultationAction(values: FestivalConsultingFo
   }
 }
 
-// New Action for Congestion Forecast
-export async function getCongestionForecastAction(payload: PredictionApiPayload): Promise<ActionResult> {
+// Modified Action for Congestion Forecast using Genkit LLM
+export async function getCongestionForecastAction(values: CongestionForecastFormValues): Promise<ActionResult> {
   try {
-    // The 'payload' already contains the necessary data structured for the Python script.
-    // If your AI flow (congestionForecast) needs a different structure (CongestionForecastInput),
-    // you would map 'payload' to 'CongestionForecastInput' here.
-    // However, the goal is to send 'payload' to the Python script via an API route.
-
-    // Make the API call to your backend endpoint that runs the Python script
-    // Ensure NEXT_PUBLIC_APP_URL is set in your environment variables
-    const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/predict-visitors`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload), // Send the structured payload
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.json();
-      return { success: false, error: errorBody.message || `API Error: ${response.status}` };
+    const budgetInMillions = parseFloat(values.budget.replace(/,/g, ''));
+    if (isNaN(budgetInMillions)) {
+        return { success: false, error: '예산은 유효한 숫자여야 합니다.' };
     }
 
-    const resultFromApi: { success: boolean; predictedVisitors?: number; message?: string } = await response.json();
+    const regionLabel = getRegionLabel(values.region);
+    const municipalityLabel = getMunicipalityLabel(values.region, values.municipality);
+    const dongName = getDongForMunicipality(values.region, values.municipality);
 
-    // Ensure predictedVisitors is a number if success is true
-    if (resultFromApi.success && typeof resultFromApi.predictedVisitors === 'number') {
-      // Construct CongestionForecastResults based on the API response.
-      // CongestionForecastOutput currently only has totalExpectedVisitors.
-      // If your Python script or API flow provides more, update CongestionForecastOutput in schemas.ts
-      const resultsData: CongestionForecastResults = {
-        congestionForecast: { // This object should match CongestionForecastOutput
-          totalExpectedVisitors: resultFromApi.predictedVisitors
- }
-      };
-      return { success: true, data: resultsData };
-    } else {
-      // Handle cases where API might return success: true but no predictedVisitors, or success: false
-      return { success: false, error: resultFromApi.message || '예측 결과를 가져오는데 실패했습니다.' };
-    }
+    const genkitInput: CongestionForecastInput = {
+      regionName: regionLabel,
+      municipalityName: municipalityLabel,
+      dongName: dongName,
+      date: format(values.date, 'yyyy-MM-dd'),
+      festivalType: values.festivalType,
+      budget: budgetInMillions,
+    };
+
+    const resultFromGenkit = await congestionForecast(genkitInput);
+    
+    const resultsData: CongestionForecastResults = {
+      congestionForecast: { 
+        totalExpectedVisitors: resultFromGenkit.totalExpectedVisitors
+      }
+    };
+    return { success: true, data: resultsData };
+
   } catch (error) {
-    console.error('Error in getCongestionForecastAction:', error);
+    console.error('Error in getCongestionForecastAction (Genkit):', error);
     return {
       success: false,
       error: error instanceof Error ? error.message : 'AI 혼잡도 예측 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
