@@ -1,93 +1,188 @@
-import { NextResponse, type NextRequest } from 'next/server';
+
+import { type NextRequest, NextResponse } from 'next/server';
 import { spawn } from 'child_process';
 import path from 'path';
-import { type PredictionApiPayload } from '@/app/schemas'; // 스키마 경로 확인 필요
+import type { PredictionApiPayload } from '@/app/schemas';
 
-export async function POST(request: NextRequest) {
+export async function POST(request: NextRequest): Promise<Response> {
+  const pythonExecutable = process.env.PYTHON_EXECUTABLE || 'python3';
+  console.log(`Attempting to use Python executable: ${pythonExecutable}`);
+  console.log(`Current working directory (from API route): ${process.cwd()}`);
+  const modelDir = path.join(process.cwd(), 'model');
+  console.log(`Target model directory: ${modelDir}`);
+
+  let body: PredictionApiPayload;
   try {
-    const body = await request.json() as PredictionApiPayload;
+    body = await request.json();
+  } catch (e) {
+    const err = e as Error;
+    console.error('Error parsing request JSON:', err.message);
+    const errorPayload = { error: `Invalid request JSON: ${err.message}` };
+    const responseBody = JSON.stringify(errorPayload);
+    return new Response(responseBody, {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
 
-    console.log("@@@@ 1")
-    // 필수 입력값 기본 검증
-    if (!body['광역자치단체'] || !body['기초자치단체 시/군/구'] || !body['읍/면/동'] || !body['축제 시작일'] || !body['축제 종류'] || body['예산'] === undefined) {
-      return NextResponse.json({ error: '필수 입력 데이터가 누락되었습니다.' }, { status: 400 });
-    }
+  // Detailed input validation
+  const requiredFields: (keyof PredictionApiPayload)[] = [
+    '광역자치단체',
+    '기초자치단체 시/군/구',
+    '읍/면/동',
+    '축제 시작일',
+    '축제 종류',
+  ];
+  const missingFields = requiredFields.filter(field => !body[field]);
+  if (body['예산'] === undefined || body['예산'] === null || (typeof body['예산'] === 'string' && body['예산'].trim() === '')) {
+      missingFields.push('예산');
+  }
 
-    const pythonScriptPath = path.join(process.cwd(), 'model', 'predict_visitors.py');
-    // 시스템에 따라 'python' 또는 'python3' 사용
-    const pythonExecutable = process.env.PYTHON_EXECUTABLE || 'python'; 
 
+  if (missingFields.length > 0) {
+    const errorMessage = `필수 입력 데이터가 누락되었습니다: ${missingFields.join(', ')}`;
+    console.error(errorMessage);
+    const errorPayload = { error: errorMessage };
+    const responseBody = JSON.stringify(errorPayload);
+    return new Response(responseBody, {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  
+  const pythonScriptPath = path.join(modelDir, 'predict_visitors.py');
+  console.log(`Full path to Python script: ${pythonScriptPath}`);
+
+  return new Promise<Response>((resolve) => {
     const scriptPayload = JSON.stringify(body);
-
-    // Python 스크립트에 전달될 데이터 로깅 (디버깅용)
     console.log("Sending to Python script:", scriptPayload);
 
-    // Python 스크립트 실행. 'cwd' 설정으로 스크립트 내 상대 경로 파일(모델, 엑셀 등) 로드 보장
     const pythonProcess = spawn(pythonExecutable, [pythonScriptPath], {
-        cwd: path.join(process.cwd(), 'model') 
+        cwd: modelDir, // Set working directory for the script
+        stdio: ['pipe', 'pipe', 'pipe'], // Ensure stdio is piped
     });
 
     let scriptOutput = '';
     let scriptError = '';
-
-    pythonProcess.stdin.write(scriptPayload);
-    pythonProcess.stdin.end();
+    let stdoutClosed = false;
+    let stderrClosed = false;
 
     pythonProcess.stdout.on('data', (data) => {
-      scriptOutput += data.toString();
+      const chunk = data.toString();
+      scriptOutput += chunk;
+      console.log(`Python stdout chunk: ${chunk.substring(0, 200)}...`);
     });
 
     pythonProcess.stderr.on('data', (data) => {
-      const errData = data.toString();
-      scriptError += errData;
-      // Python 스크립트의 stderr 출력을 서버 콘솔에 로깅 (디버깅에 유용)
-      console.error(`Python script stderr: ${errData}`);
+      const chunk = data.toString();
+      scriptError += chunk;
+      console.error(`Python stderr chunk: ${chunk.substring(0, 200)}...`);
+    });
+    
+    pythonProcess.stdout.on('close', () => {
+        stdoutClosed = true;
+        console.log("Python stdout stream closed.");
+        if (stdoutClosed && stderrClosed) {
+            // This check might be redundant if 'close' event handles it
+        }
     });
 
-    const exitCode = await new Promise<number | null>((resolve, reject) => {
-      pythonProcess.on('close', (code) => {
-        resolve(code);
-      });
-      pythonProcess.on('error', (err) => {
-        console.error('Failed to start Python subprocess.', err);
-        reject(err); // Python 프로세스 시작 자체에 실패한 경우
-      });
+    pythonProcess.stderr.on('close', () => {
+        stderrClosed = true;
+        console.log("Python stderr stream closed.");
+        if (stdoutClosed && stderrClosed) {
+            // This check might be redundant if 'close' event handles it
+        }
     });
-
-    if (exitCode !== 0) {
-      console.error(`Python script exited with code ${exitCode}. Error: ${scriptError}`);
-      return NextResponse.json({ error: `Python 스크립트 실행 오류 (코드: ${exitCode}): ${scriptError || '알 수 없는 오류'}` }, { status: 500 });
-    }
-
-    // Python 스크립트가 정상 종료(exitCode 0)했으나, stderr에 내용이 있고 stdout이 비어있다면 오류로 간주
-    if (scriptError && !scriptOutput.trim() && exitCode === 0) {
-        console.warn(`Python script exited successfully but produced stderr output without stdout: ${scriptError}`);
-        // 이 경우, scriptError 내용을 오류 메시지로 사용할 수 있으나, 상황에 따라 다를 수 있음
-    }
 
     try {
-      const predictionResult = JSON.parse(scriptOutput);
-      // Python 스크립트는 {"predicted_visitors": 숫자} 형태의 JSON을 반환
-      if (predictionResult && typeof predictionResult.predicted_visitors === 'number') {
-        return NextResponse.json({
-            congestionForecast: { // 프론트엔드 CongestionForecastResults 구조에 맞춤
-                totalExpectedVisitors: predictionResult.predicted_visitors
-            }
-        });
-      } else {
-        console.error('Python script output format unexpected:', scriptOutput);
-        return NextResponse.json({ error: 'Python 스크립트로부터 유효한 예측 결과를 받지 못했습니다.' }, { status: 500 });
-      }
-    } catch (e) {
-      console.error('Error parsing Python script output:', e, "\nOutput was:", scriptOutput, "\nError was:", scriptError);
-      return NextResponse.json({ error: `Python 스크립트 결과 파싱 오류: ${scriptError || scriptOutput}` }, { status: 500 });
+        pythonProcess.stdin.write(scriptPayload);
+        pythonProcess.stdin.end();
+        console.log("Successfully wrote to Python stdin and ended.");
+    } catch (stdinError: any) {
+        const errorMessage = `Error writing to Python stdin: ${stdinError.message}`;
+        console.error(errorMessage, stdinError.stack);
+        const errorPayload = { error: errorMessage };
+        const responseBody = JSON.stringify(errorPayload);
+        resolve(new Response(responseBody, {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+        return; // Exit promise executor
     }
 
-  } catch (error) {
-    console.error('API Route Error:', error);
-    if (error instanceof SyntaxError) { // 요청 body의 JSON 파싱 오류
-        return NextResponse.json({ error: '잘못된 요청 데이터 형식입니다.' }, { status: 400 });
-    }
-    return NextResponse.json({ error: '내부 서버 오류가 발생했습니다.' }, { status: 500 });
-  }
+    pythonProcess.on('close', (code) => {
+      console.log(`Python script finished. Exit code: ${code}`);
+      console.log(`Final Python stdout: ${scriptOutput.substring(0,1000)}`);
+      console.error(`Final Python stderr: ${scriptError.substring(0,1000)}`);
+
+      if (code === 0) {
+        if (!scriptOutput.trim()) {
+            const errorMessage = 'Python 스크립트가 성공적으로 실행되었으나 출력이 없습니다.';
+            console.error(errorMessage);
+            if (scriptError.trim()) {
+                console.error(`Python stderr had content: ${scriptError.substring(0,500)}`);
+            }
+            const errorPayload = { error: errorMessage };
+            const responseBody = JSON.stringify(errorPayload);
+            resolve(new Response(responseBody, {
+              status: 500,
+              headers: { 'Content-Type': 'application/json' },
+            }));
+            return;
+        }
+        try {
+          const predictionResult = JSON.parse(scriptOutput);
+          if (predictionResult && typeof predictionResult.predicted_visitors === 'number') {
+            const apiResponse = {
+                congestionForecast: {
+                    totalExpectedVisitors: predictionResult.predicted_visitors,
+                },
+            };
+            console.log("Python script success, API Response:", apiResponse);
+            // For success, NextResponse.json is generally fine
+            resolve(NextResponse.json(apiResponse));
+          } else {
+            const errorMessage = `Python 스크립트 출력 형식 오류. 예상: {"predicted_visitors": number}, 실제: ${scriptOutput.substring(0, 500)}`;
+            console.error(errorMessage);
+            const errorPayload = { error: errorMessage };
+            const responseBody = JSON.stringify(errorPayload);
+            resolve(new Response(responseBody, {
+              status: 500,
+              headers: { 'Content-Type': 'application/json' },
+            }));
+          }
+        } catch (e: any) {
+          const errorMessage = `Python 스크립트 출력 JSON 파싱 오류: ${e.message || String(e)}. 출력 (앞 500자): ${scriptOutput.substring(0, 500)}. Stderr (앞 500자): ${scriptError.substring(0, 500)}`;
+          console.error(errorMessage);
+          const errorPayload = { error: errorMessage };
+          const responseBody = JSON.stringify(errorPayload);
+          resolve(new Response(responseBody, {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        }
+      } else {
+        const errorMessage = `Python 스크립트 실행 실패 (종료 코드: ${code}). 에러: ${scriptError.substring(0, 500) || '알 수 없는 오류'}`;
+        console.error(errorMessage);
+        const errorPayload = { error: errorMessage };
+        const responseBody = JSON.stringify(errorPayload);
+        resolve(new Response(responseBody, {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+    });
+
+    pythonProcess.on('error', (spawnError) => {
+      const errorMessage = `Python subprocess failed to start or crashed: ${spawnError.message}`;
+      console.error("Python process spawn error:", errorMessage, spawnError.stack);
+      const errorPayload = { error: errorMessage };
+      const responseBody = JSON.stringify(errorPayload);
+      resolve(new Response(responseBody, {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    });
+  });
 }
