@@ -1,5 +1,4 @@
-
-# Stage 1: Base image with Node.js and Python
+# 1. Base Node.js image
 FROM node:18-slim AS base
 LABEL authors="firebase-studio"
 
@@ -11,58 +10,81 @@ RUN apt-get update && \
 # Set working directory for the app
 WORKDIR /app
 
-# Stage 2: Install Python dependencies
+# Install Python and pip, and other common dependencies
+RUN apt-get update && apt-get install -y python3 python3-pip curl build-essential --no-install-recommends && rm -rf /var/lib/apt/lists/*
+
+# --- Python Dependencies ---
+# This stage installs Python dependencies using requirements.txt from the project root.
 FROM base AS python-deps
 WORKDIR /app
 # Copy requirements first to leverage Docker cache
 COPY ./requirements.txt ./requirements.txt
 RUN pip3 install --no-cache-dir -r ./requirements.txt
-# Copy the entire model directory which includes Python scripts, model files, and data
-COPY ./model ./model
 
-# Stage 3: Install Node.js dependencies
+# --- Next.js Dependencies ---
+# This stage installs Node.js dependencies.
+FROM base AS nextjs-deps
+WORKDIR /app
+COPY package.json package-lock.json* pnpm-lock.yaml* ./
+# Choose your package manager. If you use pnpm, adapt the RUN command.
+# Using npm:
+RUN npm install --frozen-lockfile
+# If using pnpm (example):
+# RUN curl -fsSL https://get.pnpm.io/install.sh | SHELL=/bin/bash bash -
+# RUN /root/.local/share/pnpm/pnpm install --frozen-lockfile
+
+# --- Build Next.js App ---
+# This stage builds the Next.js application.
 FROM base AS builder
 WORKDIR /app
-COPY ./package.json ./package-lock.json* ./
-RUN npm install
-
-# Stage 4: Build Next.js app
+COPY --from=nextjs-deps /app/node_modules ./node_modules
 COPY . .
-# If a Genkit key is needed for other parts of the app (not the Python model)
-# ARG NEXT_PUBLIC_GOOGLE_API_KEY
-# ENV NEXT_PUBLIC_GOOGLE_API_KEY=${NEXT_PUBLIC_GOOGLE_API_KEY}
+# Ensure PYTHON_EXECUTABLE is available if build scripts need it (usually not for `npm run build`)
+# ENV PYTHON_EXECUTABLE=/usr/bin/python3
 RUN npm run build
 
-# Stage 5: Production image
+# --- Final Production Image ---
+# This stage creates the lean production image.
 FROM base AS runner
 WORKDIR /app
 
 # Set environment variables
 ENV NODE_ENV=production
-# ENV NEXT_PUBLIC_GOOGLE_API_KEY=${NEXT_PUBLIC_GOOGLE_API_KEY} # Inherit from build stage if needed
-ENV NEXT_PUBLIC_PYTHON_API_URL="http://localhost:5000/predict" # Next.js will call Flask on this URL
+# Set PYTHON_EXECUTABLE for runtime, so the Next.js app can spawn the Python script.
+ENV PYTHON_EXECUTABLE=/usr/bin/python3
 
-# Copy built Next.js app from builder stage
-COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/next.config.ts ./next.config.ts # or next.config.js
+# Create a non-root user for security
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
 
-# Copy Python app and dependencies from python-deps stage
-COPY --from=python-deps /app/model ./model
+# Copy Python dependencies from the python-deps stage.
+# The exact path might depend on the Python version and how pip installs them.
+# For python3.11 (often in node:18-slim's debian base), it's /usr/local/lib/python3.11/site-packages
 COPY --from=python-deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-# Ensure the Python executable used by gunicorn is findable
-# Python was installed to system path by apt-get, so /usr/bin/python3 should work
 
-# Create a startup script
-COPY ./start.sh ./start.sh
-RUN chmod +x ./start.sh
+# Copy built Next.js app artifacts
+COPY --from=builder /app/public ./public
+# Next.js 13+ output structure
+COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
 
-# Expose Next.js port (default 3000) and Flask port (5000)
+# Copy the model directory containing Python scripts and data
+COPY ./model ./model
+
+# Set ownership for the app directory to the non-root user
+RUN chown -R nextjs:nodejs /app
+
+# Switch to the non-root user
+USER nextjs
+
+# Expose port (default Next.js port is 3000)
 EXPOSE 3000
 EXPOSE 5000
 
 # Start both services using the script
 CMD ["./start.sh"]
 
-    
+# Start Next.js app
+# If using pnpm, change npm to pnpm
+CMD ["npm", "start", "-p", "3000"]
