@@ -1,57 +1,69 @@
-steps:
-  # Step 1: GCR 인증
-  - name: 'gcr.io/cloud-builders/docker'
-    id: AuthenticateGCR
-    args:
-      - 'auth'
-      - 'configure-docker'
-      - 'gcr.io'
 
-  # Step 2: Docker 이미지 빌드
+steps:
+  # Step 1: Docker 이미지 빌드
+  # 이 단계는 프로젝트 루트의 Dockerfile을 사용하여 이미지를 빌드합니다.
   - name: 'gcr.io/cloud-builders/docker'
     id: BuildDockerImage
     args:
       - 'build'
-      - '--no-cache'  # 캐시 비활성화로 최신 requirements.txt 반영
+      - '--no-cache' # 개발 중에는 캐시를 사용하지 않는 것이 좋으나, 프로덕션에서는 제거하거나 조절할 수 있습니다.
       - '-t'
-      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA'
+      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA' # 커밋 SHA로 태그
       - '-t'
-      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:latest'
-      - '.'  # Dockerfile이 프로젝트 루트에 있다고 가정
+      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:latest'       # latest로 태그
+      - '.' # Dockerfile이 있는 현재 디렉토리
 
-  # Step 3: Python 의존성 설치 확인
-  - name: 'gcr.io/cloud-builders/docker'
-    id: VerifyPythonDependencies
-    args:
-      - 'run'
-      - '--rm'
-      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA'
-      - '/app/venv/bin/python'
-      - '-c'
-      - 'import joblib, ipython, jedi, jupyter_client, jupyter_core; print("joblib version:", joblib.__version__)'
-    waitFor:
-      - 'BuildDockerImage'
-
-  # Step 4: Docker 이미지 푸시
+  # Step 2: Docker 이미지 Google Container Registry(GCR)에 푸시
+  # 빌드된 이미지를 GCR에 푸시합니다. Cloud Run이 이 이미지를 사용합니다.
   - name: 'gcr.io/cloud-builders/docker'
     id: PushDockerImage
     args:
       - 'push'
-      - '--all-tags'
-      - 'gcr.io/$PROJECT_ID/smart-k-festa-image'
+      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA'
+  - name: 'gcr.io/cloud-builders/docker'
+    id: PushDockerImageLatest
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:latest'
     waitFor:
-      - 'BuildDockerImage'
-      - 'AuthenticateGCR'
+      - 'PushDockerImage' # COMMIT_SHA 태그 푸시 완료 후 latest 태그 푸시
 
-# 푸시할 이미지 지정
+  # Step 3: Google Cloud Run에 배포
+  # GCR에 푸시된 Docker 이미지를 사용하여 Cloud Run 서비스에 새 버전을 배포합니다.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: DeployToCloudRun
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'smart-k-festa-service' # Cloud Run 서비스 이름 (원하는 이름으로 변경 가능)
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA' # 방금 빌드하고 푸시한 이미지 사용
+      - '--region'
+      - 'asia-northeast3' # Cloud Run 서비스를 배포할 리전 (예: 서울은 asia-northeast3)
+      - '--platform'
+      - 'managed' # Google에서 완전히 관리하는 서버리스 플랫폼 사용
+      - '--port'
+      - '3000' # Next.js 애플리케이션이 수신 대기하는 컨테이너 포트
+      - '--allow-unauthenticated' # 공개 웹사이트의 경우 인증되지 않은 호출 허용 (필요에 따라 IAM으로 제어)
+      # 필요한 경우 여기에 추가 환경 변수를 설정할 수 있습니다. 예:
+      # - '--set-env-vars=KEY1=VALUE1,KEY2=VALUE2'
+      # Flask API는 컨테이너 내부 localhost:5000에서 실행되므로,
+      # NEXT_PUBLIC_PYTHON_API_URL는 Next.js 빌드 시 .env 파일에 의해 이미 설정되어 있어야 합니다.
+      # (예: NEXT_PUBLIC_PYTHON_API_URL=http://localhost:5000/predict)
+    waitFor:
+      - 'PushDockerImageLatest' # 이미지 푸시 완료 후 배포 시작
+
+# 빌드된 이미지를 명시합니다.
 images:
-  - 'gcr.io/$PROJECT_ID/smart-k-festa-image'
+  - 'gcr.io/$PROJECT_ID/smart-k-festa-image:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/smart-k-festa-image:latest'
 
-# 글로벌 타임아웃
-timeout: 2400s  # 40분
+# 빌드 타임아웃 설정
+timeout: 2400s # 40분
 
 # 로그 설정
 options:
   logging: CLOUD_LOGGING_ONLY
 
-
+    
