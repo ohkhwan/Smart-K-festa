@@ -1,15 +1,42 @@
 
-# This file is no longer strictly necessary for the core application
-# if all Python dependencies were solely for predict_visitors.py,
-# which has been replaced by a Genkit flow.
-#
-# If you have other Python scripts or dependencies, list them here.
-# For now, it's cleared to reflect the removal of the Python visitor prediction model.
+Flask>=2.0.0
+gunicorn>=20.0.0
+joblib>=1.0.0
+pandas>=1.0.0
+numpy>=1.18.0
+scikit-learn>=0.23.0 
+# openpyxl 은 pandas.read_excel 사용 시 필요하므로 명시
+openpyxl>=3.0.0 
+# xgboost는 현재 predict_visitors.py에서 직접 사용되지 않지만, 
+# 만약 best_model.joblib이 내부적으로 xgboost 모델을 포함하고 있다면 필요할 수 있습니다.
+# 현재는 주석 처리합니다. 필요 시 활성화하세요.
+# xgboost 
 
-# Example:
-# pandas
-# numpy
-# scikit-learn
-# joblib
-# openpyxl
-# xgboost
+# 다음은 Genkit 및 Next.js 관련 의존성이었으나, Python 환경에서는 불필요합니다.
+# @genkit-ai/googleai
+# @genkit-ai/next
+# @hookform/resolvers
+# @radix-ui/* (다수)
+# @tanstack/react-query
+# axios
+# class-variance-authority
+# clsx
+# date-fns
+# dotenv
+# firebase
+# genkit
+# lucide-react
+# next
+# patch-package
+# react
+# react-day-picker
+# react-dom
+# react-hook-form
+# recharts
+# tailwind-merge
+# tailwindcss-animate
+# zod
+
+# Python 모델 실행에 필요한 최소한의 패키지만 남깁니다.
+
+    

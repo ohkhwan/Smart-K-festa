@@ -1,45 +1,68 @@
 
-# --- Base Node.js Stage ---
+# Stage 1: Base image with Node.js and Python
 FROM node:18-slim AS base
-WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends dumb-init
+LABEL authors="firebase-studio"
 
-# --- Dependencies Stage ---
-FROM base AS deps
-WORKDIR /app
-COPY package.json ./
-COPY package-lock.json ./
-RUN npm install --frozen-lockfile
+# Install Python and pip
+RUN apt-get update && \
+    apt-get install -y python3 python3-pip curl git && \
+    rm -rf /var/lib/apt/lists/*
 
-# --- Builder Stage ---
+# Set working directory for the app
+WORKDIR /app
+
+# Stage 2: Install Python dependencies
+FROM base AS python-deps
+WORKDIR /app
+# Copy requirements first to leverage Docker cache
+COPY ./requirements.txt ./requirements.txt
+RUN pip3 install --no-cache-dir -r ./requirements.txt
+# Copy the entire model directory which includes Python scripts, model files, and data
+COPY ./model ./model
+
+# Stage 3: Install Node.js dependencies
 FROM base AS builder
 WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+COPY ./package.json ./package-lock.json* ./
+RUN npm install
+
+# Stage 4: Build Next.js app
 COPY . .
+# If a Genkit key is needed for other parts of the app (not the Python model)
+# ARG NEXT_PUBLIC_GOOGLE_API_KEY
+# ENV NEXT_PUBLIC_GOOGLE_API_KEY=${NEXT_PUBLIC_GOOGLE_API_KEY}
 RUN npm run build
 
-# --- Final Production Image ---
+# Stage 5: Production image
 FROM base AS runner
 WORKDIR /app
 
+# Set environment variables
 ENV NODE_ENV=production
-# ENV PYTHON_EXECUTABLE=/usr/bin/python3 # No longer needed if Python script is removed
+# ENV NEXT_PUBLIC_GOOGLE_API_KEY=${NEXT_PUBLIC_GOOGLE_API_KEY} # Inherit from build stage if needed
+ENV NEXT_PUBLIC_PYTHON_API_URL="http://localhost:5000/predict" # Next.js will call Flask on this URL
 
-# Copy necessary files from builder stage
+# Copy built Next.js app from builder stage
+COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
-COPY --from=builder --chown=node:node /app/.next/standalone ./
-COPY --from=builder --chown=node:node /app/.next/static ./.next/static
-# COPY --from=builder /app/model ./model # No longer needed if Python script and its data are removed
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/next.config.ts ./next.config.ts # or next.config.js
 
-# Set user to non-root
-USER node
+# Copy Python app and dependencies from python-deps stage
+COPY --from=python-deps /app/model ./model
+COPY --from=python-deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+# Ensure the Python executable used by gunicorn is findable
+# Python was installed to system path by apt-get, so /usr/bin/python3 should work
 
+# Create a startup script
+COPY ./start.sh ./start.sh
+RUN chmod +x ./start.sh
+
+# Expose Next.js port (default 3000) and Flask port (5000)
 EXPOSE 3000
-ENV PORT=3000 NEXT_TELEMETRY_DISABLED=1
+EXPOSE 5000
 
-# CMD ["dumb-init", "node", "server.js"]
-# The default CMD for Next.js standalone output is usually `node server.js`
-# For Turbopack dev, it's different. For production, `npm start` or `node server.js` is common.
-# Assuming `npm start` is configured in package.json to run the standalone server:
-CMD ["dumb-init", "npm", "start", "-p", "3000"]
+# Start both services using the script
+CMD ["./start.sh"]
 
+    

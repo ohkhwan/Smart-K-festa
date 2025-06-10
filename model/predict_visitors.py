@@ -4,7 +4,7 @@ import numpy as np
 import re
 import sys
 import json
-
+import os # os 모듈 추가
 import traceback # 상세한 오류 로깅을 위해 추가
 
 # Python 3.7+ 에서 stdout/stderr 인코딩을 UTF-8로 설정 시도
@@ -22,14 +22,14 @@ except Exception:
     pass
 
 # --- 파일 경로 설정 ---
-# 서버 구동 시 model 폴더 하단에 이 파일과 모델/전처리기가 있다고 가정합니다.
-# 실제 경로에 맞게 수정해주세요.
-MODEL_PATH = 'best_model.joblib'
-PREPROCESSOR_PATH = 'preprocessor.joblib'
-PCA_TRANSFORMER_PATH = 'pca_transformer.joblib'
-FREQ_MAPS_PATH = 'address_freq_maps.joblib'
-# 원본 엑셀 파일은 '서울과거리' 및 장소 관련 피처 조회를 위해 필요합니다.
-EXCEL_DATA_PATH = '축제_데이터셋_업로드용.xlsx'
+# 스크립트 파일의 현재 디렉토리를 기준으로 상대 경로 설정
+BASE_DIR = os.path.dirname(__file__)
+MODEL_PATH = os.path.join(BASE_DIR, 'best_model.joblib')
+PREPROCESSOR_PATH = os.path.join(BASE_DIR, 'preprocessor.joblib')
+PCA_TRANSFORMER_PATH = os.path.join(BASE_DIR, 'pca_transformer.joblib')
+FREQ_MAPS_PATH = os.path.join(BASE_DIR, 'address_freq_maps.joblib')
+EXCEL_DATA_PATH = os.path.join(BASE_DIR, '축제_데이터셋_업로드용.xlsx')
+
 
 # --- 전역 변수로 모델 및 전처리기, 엑셀 데이터 로드 ---
 # 스크립트 로드 시점에 미리 로드하여 예측 요청마다 다시 로드하지 않도록 합니다.
@@ -53,13 +53,21 @@ try:
                   '산림욕장/휴향림/수목원', '폭포/계곡/호수/저수지', '해수욕장']
     excel_df[PLACE_COLS] = excel_df[PLACE_COLS].fillna(0)
 
-    print("모델, 전처리기, PCA 변환기, 주소 빈도 맵, 엑셀 데이터를 성공적으로 불러왔습니다.", file=sys.stderr)
+    # print("모델, 전처리기, PCA 변환기, 주소 빈도 맵, 엑셀 데이터를 성공적으로 불러왔습니다.", file=sys.stderr)
 except FileNotFoundError as e:
-    print(f"오류: 필요한 파일 중 일부를 찾을 수 없습니다. 경로를 확인하세요: {e}", file=sys.stderr)
-    sys.exit(1) # 스크립트 종료
+    # print(f"오류: 필요한 파일 중 일부를 찾을 수 없습니다. 경로를 확인하세요: {e}", file=sys.stderr)
+    # print(f"Base directory: {BASE_DIR}", file=sys.stderr)
+    # print(f"Attempted MODEL_PATH: {MODEL_PATH}", file=sys.stderr)
+    # print(f"Attempted EXCEL_DATA_PATH: {EXCEL_DATA_PATH}", file=sys.stderr)
+    # Flask 앱에서는 이 print 문 대신 로깅을 사용하거나, Flask가 시작되지 않도록 예외를 다시 발생시킬 수 있습니다.
+    # 여기서는 Flask 앱이 시작될 수 있도록 하되, 예측 시 오류가 발생하도록 둡니다.
+    # 또는, Flask 앱 로드 시점에 이 예외를 처리하도록 app.py에서 관리할 수 있습니다.
+    # sys.exit(1) # Flask 앱에서는 sys.exit() 사용 지양
+    raise e # Flask 앱 로딩 시점에 에러를 발생시켜 문제 인지
 except Exception as e:
-    print(f"파일 로드 중 오류 발생: {e}", file=sys.stderr)
-    sys.exit(1) # 스크립트 종료
+    # print(f"파일 로드 중 오류 발생: {e}", file=sys.stderr)
+    # sys.exit(1) # Flask 앱에서는 sys.exit() 사용 지양
+    raise e
 
 # --- Define feature_order (Crucial for preprocessor) ---
 # This list MUST match the feature names and order expected by your
@@ -94,18 +102,18 @@ def clean_type(x):
     elif '체험' in s: return '체험행사'
     else: return '기타'
 
-def get_additional_features(si, gungu, dong, excel_data):
+def get_additional_features(si, gungu, dong, excel_data_param): # excel_df 대신 파라미터 사용
     """
     주어진 지역(시, 군구, 법정동)의 가장 최근 '시작년' 데이터를 기준으로
     8개의 장소 관련 피처와 '서울과거리'를 '축제_데이터셋_업로드용.xlsx'에서 조회합니다.
     반환: (8개 장소 피처 리스트, 서울과거리 값) 또는 데이터 없는 경우 ([0.0]*8, 0.0)
     """
-    location_filter = (excel_data['시'] == si) & \
-                      (excel_data['군구'] == gungu) & \
-                      (excel_data['법정동'] == dong)
-    relevant_data = excel_data[location_filter]
+    location_filter = (excel_data_param['시'] == si) & \
+                      (excel_data_param['군구'] == gungu) & \
+                      (excel_data_param['법정동'] == dong)
+    relevant_data = excel_data_param[location_filter]
 
-    features_to_fetch = PLACE_COLS + ['서울과거리']
+    # PLACE_COLS는 전역변수를 참조하지만, 함수 내부에서 변경하지 않으므로 괜찮습니다.
     num_place_features = len(PLACE_COLS)
 
     if relevant_data.empty:
@@ -154,7 +162,7 @@ def predict_festival_outcome(si, gungu, dong, festival_date, festival_type, budg
     try:
         # 날짜 파싱 및 피처 생성
         start_date = pd.to_datetime(festival_date)
-        start_year = start_date.year
+        # start_year = start_date.year # 현재 사용되지 않음
         start_month = start_date.month
 
         # '계절' 계산
@@ -170,39 +178,38 @@ def predict_festival_outcome(si, gungu, dong, festival_date, festival_type, budg
         calculated_festival_type_category = clean_type(festival_type)
 
         # '예산\n(백만)' 변환 (원 단위) - 노트북과 동일하게 처리
-        budget_won = float(budget) * 1_000_000
+        # Flask API에서 받은 budget은 이미 백만원 단위 float이라고 가정
+        budget_million_won = float(budget) # 이미 백만원 단위이므로 추가 변환 불필요 (모델 입력 기준)
 
         # '서울과거리' 및 8개 장소 피처 조회
+        # 전역변수 excel_df를 사용
         raw_place_features, seoul_distance = get_additional_features(si, gungu, dong, excel_df)
+
 
         # '장소_PCA' 계산
         # pca_transformer는 (n_samples, n_features) 형태의 입력을 기대
         # raw_place_features는 1D list이므로 2D numpy array로 변환
-        if raw_place_features is not None and len(raw_place_features) == pca_transformer.n_features_in_:
+        # 전역변수 pca_transformer, PLACE_COLS 사용
+        if raw_place_features is not None and pca_transformer is not None and hasattr(pca_transformer, 'n_features_in_') and len(raw_place_features) == pca_transformer.n_features_in_:
             place_features_df = pd.DataFrame([raw_place_features], columns=PLACE_COLS) # 또는 pca_transformer.feature_names_in_
             place_pca_value = pca_transformer.transform(place_features_df)[0, 0]
         else:
-            # PCA 입력 피처 개수가 맞지 않거나 raw_place_features가 None일 경우
             # print(f"경고: PCA 변환을 위한 장소 피처 개수가 맞지 않거나 데이터가 없습니다. 장소_PCA는 0으로 설정됩니다.", file=sys.stderr)
             place_pca_value = 0.0
 
         # '주소점수' 계산
-        si_freq = address_freq_maps['si'].get(si, 0)
-        gungu_freq = address_freq_maps['gungu'].get(gungu, 0)
-        dong_freq = address_freq_maps['dong'].get(dong, 0)
+        # 전역변수 address_freq_maps 사용
+        si_freq = address_freq_maps['si'].get(si, 0) if address_freq_maps and 'si' in address_freq_maps else 0
+        gungu_freq = address_freq_maps['gungu'].get(gungu, 0) if address_freq_maps and 'gungu' in address_freq_maps else 0
+        dong_freq = address_freq_maps['dong'].get(dong, 0) if address_freq_maps and 'dong' in address_freq_maps else 0
         calculated_address_score = si_freq + gungu_freq + dong_freq
 
         # '1인당예산' 처리 (주의: 데이터 누수 가능성으로 인해 0으로 설정)
-        # 이 피처는 학습 시 타겟 변수('방문객합계')를 사용하여 계산되었습니다.
-        # 예측 시점에는 '방문객합계'를 알 수 없으므로, 정확한 계산이 불가능합니다.
-        # 노트북에서는 (df1['예산\n(백만)'] / (df1['방문객합계'] + 1)) 로 계산.
-        # 예측 시점에는 방문객합계를 모르므로, 이 피처는 0 또는 평균값 등으로 대체하거나,
-        # 모델 학습 시 이 피처를 제외하는 것이 더 바람직할 수 있습니다. 여기서는 0으로 설정합니다.
         calculated_per_capita_budget = 0.0
 
         # 입력 데이터를 DataFrame으로 구성
         input_data_dict = {
-            '예산\n(백만)': [budget_won],
+            '예산\n(백만)': [budget_million_won], # 모델은 이 컬럼명으로 학습됨
             '서울과거리': [seoul_distance],
             '1인당예산': [calculated_per_capita_budget], # 0.0으로 설정
             '장소_PCA': [place_pca_value],
@@ -211,107 +218,98 @@ def predict_festival_outcome(si, gungu, dong, festival_date, festival_type, budg
             '계절': [calculated_season]
         }
 
-        # Create DataFrame using all available keys from input_data_dict first
         temp_df = pd.DataFrame(input_data_dict)
-
-        # Ensure all columns expected by the preprocessor are present, in the correct order.
-        # Add missing columns with np.nan if they are not in input_data_dict,
-        # assuming the preprocessor's imputer will handle them.
-        for col in PREPROCESSOR_FEATURE_ORDER:
-            if col not in temp_df.columns:
-                temp_df[col] = np.nan # Or a more appropriate default/imputation strategy
         
-        input_df = temp_df[PREPROCESSOR_FEATURE_ORDER] # Select columns in the correct order
+        # 전역변수 PREPROCESSOR_FEATURE_ORDER 사용
+        input_df_ordered = pd.DataFrame(columns=PREPROCESSOR_FEATURE_ORDER)
+        for col in PREPROCESSOR_FEATURE_ORDER:
+            if col in temp_df.columns:
+                input_df_ordered[col] = temp_df[col]
+            else:
+                input_df_ordered[col] = np.nan # 전처리기가 결측치 처리 가정
+        
+        # 데이터 전처리 (전역변수 preprocessor 사용)
+        preprocessed_data = preprocessor.transform(input_df_ordered)
 
-        # 데이터 전처리
-        # preprocessor는 학습 데이터로 fit된 상태여야 합니다.
-        preprocessed_data = preprocessor.transform(input_df)
-
-        # 예측 수행
-        # 모델이 로그 변환된 타겟(y = df1['방문객합계_log'])으로 학습되었으므로,
-        # 예측값도 로그 스케일입니다. np.expm1()을 사용하여 원래 스케일로 되돌립니다.
+        # 예측 수행 (전역변수 model 사용)
         prediction_log = model.predict(preprocessed_data)
-        prediction_original_scale = np.expm1(prediction_log[0]) # np.expm1 사용
+        prediction_original_scale = np.expm1(prediction_log[0])
 
-        # 예측 결과가 음수일 경우 0으로 처리 (방문객 수는 음수가 될 수 없음)
         prediction_original_scale = max(0, prediction_original_scale)
 
         return prediction_original_scale
 
     except Exception as e:
-        print(f"예측 함수 실행 중 오류 발생: {e}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-        # 오류 발생 시 적절한 기본값 또는 오류 코드를 반환하도록 처리
-        return -1 # 예: 오류를 나타내는 값 반환
+        current_app_logger = None
+        try: # Flask 컨텍스트 내에서 logger 가져오기 시도
+            from flask import current_app
+            current_app_logger = current_app.logger
+        except RuntimeError: # Flask 컨텍스트 외부일 경우
+            pass
+
+        if current_app_logger:
+            current_app_logger.error(f"예측 함수 실행 중 오류 발생: {e}")
+            current_app_logger.error(traceback.format_exc())
+        else: # 일반 print (e.g. 직접 실행 시)
+            print(f"예측 함수 실행 중 오류 발생: {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        return -1 # 오류를 나타내는 값 반환
 
 # --- 스크립트 실행 부분 (서버에서 호출될 때 사용될 수 있는 형태) ---
 # 이 부분은 스크립트를 직접 실행하여 테스트하거나,
 # 서버에서 subprocess 등으로 호출하여 표준 입/출력을 통해 통신할 때 사용됩니다.
+# Flask 앱으로 실행될 때는 이 블록이 실행되지 않습니다.
 if __name__ == "__main__":
-    # 서버로부터 JSON 형태의 입력 데이터를 표준 입력으로 받는다고 가정
-    
-    # UTF-8로 표준 입력 읽기
     try:
         input_bytes = sys.stdin.buffer.read()
         input_json_str = input_bytes.decode('utf-8')
         if not input_json_str.strip():
             print("오류: stdin으로부터 빈 입력을 받았습니다.", file=sys.stderr)
             sys.exit(1)
-        print(f"Python: Received raw stdin ({len(input_bytes)} bytes): '{input_json_str}'", file=sys.stderr)
+        # print(f"Python: Received raw stdin ({len(input_bytes)} bytes): '{input_json_str}'", file=sys.stderr)
     except Exception as e:
         print(f"오류: stdin 읽기 또는 UTF-8 디코딩 중 오류 발생: {e}", file=sys.stderr)
         sys.exit(1)
 
     try:
         input_data = json.loads(input_json_str)
-        print(f"Python: Parsed JSON: {input_data}", file=sys.stderr)
+        # print(f"Python: Parsed JSON: {input_data}", file=sys.stderr)
 
-        # 입력 데이터 매핑
         si_param = input_data.get("광역자치단체")
         gungu_param = input_data.get("기초자치단체 시/군/구")
         dong_param = input_data.get("읍/면/동")
-        festival_date_param = input_data.get("축제 시작일") # Expected as "YYYY-MM-DD" string from TS server
+        festival_date_param = input_data.get("축제 시작일") 
         festival_type_param = input_data.get("축제 종류")
-        budget_param = input_data.get("예산") # Expected as float (millions) from TS server
+        budget_param = input_data.get("예산") 
 
-        # 디버깅을 위해 각 파라미터 값 로깅
-        print(f"Python internal params: si_param = {repr(si_param)}, gungu_param = {repr(gungu_param)}, dong_param = {repr(dong_param)}, "
-              f"festival_date_param = {repr(festival_date_param)}, festival_type_param = {repr(festival_type_param)}, budget_param = {repr(budget_param)}", file=sys.stderr)
+        # print(f"Python internal params: si_param = {repr(si_param)}, gungu_param = {repr(gungu_param)}, dong_param = {repr(dong_param)}, "
+        #       f"festival_date_param = {repr(festival_date_param)}, festival_type_param = {repr(festival_type_param)}, budget_param = {repr(budget_param)}", file=sys.stderr)
         
-        # 필수 입력값 확인
-        # budget_param은 0일 수도 있으므로, None인지 여부만 확인
-        # 다른 파라미터들은 문자열이므로, 비어있지 않은지 확인 (None 또는 빈 문자열이면 False로 평가됨)
         params_to_check = [
-            si_param,             # True if non-empty string
-            gungu_param,          # True if non-empty string
-            dong_param,           # True if non-empty string
-            festival_date_param,  # True if non-empty string
-            festival_type_param,  # True if non-empty string
-            budget_param is not None # True if budget_param is not None (0 is acceptable)
+            si_param, gungu_param, dong_param, festival_date_param, festival_type_param, budget_param is not None
         ]
         
         all_params_valid = all(params_to_check)
-        print(f"Python: Params for all() check: {[repr(p) for p in params_to_check[:-1]] + [params_to_check[-1]]}", file=sys.stderr)
-        print(f"Python: Result of all() check (all_params_valid): {all_params_valid}", file=sys.stderr)
+        # print(f"Python: Params for all() check: {[repr(p) for p in params_to_check[:-1]] + [params_to_check[-1]]}", file=sys.stderr)
+        # print(f"Python: Result of all() check (all_params_valid): {all_params_valid}", file=sys.stderr)
 
         if not all_params_valid:
              missing_details = []
              if not si_param: missing_details.append("광역자치단체")
              if not gungu_param: missing_details.append("기초자치단체 시/군/구")
-             # ... (다른 필드들도 유사하게 추가 가능)
+             if not dong_param: missing_details.append("읍/면/동")
+             if not festival_date_param: missing_details.append("축제 시작일")
+             if not festival_type_param: missing_details.append("축제 종류")
              if budget_param is None: missing_details.append("예산")
              print(f"오류: 필수 입력 데이터가 누락되었습니다. (Python __main__ check). 누락 의심 항목: {', '.join(missing_details) if missing_details else '확인 필요'}", file=sys.stderr)
              sys.exit(1)
 
-        print("Python: Passed input validation in __main__. Calling predict_festival_outcome...", file=sys.stderr)
-        # 예측 수행
+        # print("Python: Passed input validation in __main__. Calling predict_festival_outcome...", file=sys.stderr)
         predicted_visitors = predict_festival_outcome(
             si_param, gungu_param, dong_param, festival_date_param, festival_type_param, budget_param
         )
 
-        # 예측 결과를 JSON 형태로 표준 출력
-        # 오류 값 (-1)인 경우 별도 처리 가능
-        output_data = {"predicted_visitors": round(predicted_visitors)} # 소수점 반올림하여 정수로
+        output_data = {"predicted_visitors": round(predicted_visitors)} 
         print(json.dumps(output_data))
 
     except json.JSONDecodeError:
@@ -321,3 +319,5 @@ if __name__ == "__main__":
         print(f"스크립트 실행 중 예상치 못한 오류 발생: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
+
+    
