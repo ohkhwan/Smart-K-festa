@@ -168,3 +168,12 @@ export const municipalities: { [key: string]: Municipality[] } = {
 export const getMunicipalitiesForRegion = (regionValue: string): Municipality[] => {
   return municipalities[regionValue] || [];
 };
+
+export const getDongForMunicipality = (regionValue: string, municipalityValue: string): string | undefined => {
+  const regionMunicipalities = municipalities[regionValue];
+  if (!regionMunicipalities) {
+    return undefined;
+  }
+  const municipality = regionMunicipalities.find(m => m.value === municipalityValue);
+  return municipality?.dong;
+};
